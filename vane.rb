@@ -10,10 +10,11 @@ def main
 
   begin
     vane_options = VaneOptions.load_from_arguments
+    vane_output = VaneOutput.new(vane_options.verbose)
 
     $log = vane_options.log
 
-    banner() # called after $log set
+    vane_output.start
 
     unless vane_options.has_options?
       # first parameter only url?
@@ -35,7 +36,7 @@ def main
     end
 
     if vane_options.version
-      puts "Current version: #{VANE_VERSION}"
+      vane_output.version
       exit(0)
     end
 
@@ -76,7 +77,7 @@ def main
     # Remote website has a redirection?
     if (redirection = wp_target.redirection)
       if vane_options.follow_redirection
-        puts "Following redirection #{redirection}"
+        vane_output.follow_redirection(redirection)
       else
         puts "#{notice('[i]')} The remote host tried to redirect to: #{redirection}"
         print '[?] Do you want follow the redirection ? [Y]es [N]o [A]bort, default: [N]'
@@ -127,72 +128,70 @@ def main
     # Output runtime data
     start_time   = Time.now
     start_memory = get_memory_usage
-    puts "#{info('[+]')} URL: #{wp_target.url}"
-    puts "#{info('[+]')} Started: #{start_time.asctime}"
-    puts
+    vane_output.set_url(wp_target.url)
+    vane_output.set_start_time(start_time)
 
     if wp_target.wordpress_hosted?
-      puts "#{critical('[!]')} We do not support scanning *.wordpress.com hosted blogs"
+      vane_output.wordpress_hosted_warning
     end
 
     if wp_target.has_robots?
-      puts "#{info('[+]')} robots.txt available under: '#{wp_target.robots_url}'"
+      vane_output.set_robots_url(wp_target.robots_url)
 
       wp_target.parse_robots_txt.each do |dir|
-        puts "#{info('[+]')} Interesting entry from robots.txt: #{dir}"
+        vane_output.add_robots_entry(dir)
       end
     end
 
     if wp_target.has_readme?
-      puts "#{warning('[!]')} The WordPress '#{wp_target.readme_url}' file exists exposing a version number"
+      vane_output.set_readme_url(wp_target.readme_url)
     end
 
     if wp_target.has_full_path_disclosure?
-      puts "#{warning('[!]')} Full Path Disclosure (FPD) in: '#{wp_target.full_path_disclosure_url}'"
+      vane_output.set_full_path_disclosure_url(wp_target.full_path_disclosure_url)
     end
 
     if wp_target.has_debug_log?
-      puts "#{critical('[!]')} Debug log file found: #{wp_target.debug_log_url}"
+      vane_output.set_debug_log_url(wp_target.debug_log_url)
     end
 
     wp_target.config_backup.each do |file_url|
-      puts "#{critical('[!]')} A wp-config.php backup file has been found in: '#{file_url}'"
+      vane_output.add_backup_file(file_url)
     end
 
     if wp_target.search_replace_db_2_exists?
-      puts "#{critical('[!]')} searchreplacedb2.php has been found in: '#{wp_target.search_replace_db_2_url}'"
+      vane_output.set_searchreplacedb2_url(wp_target.search_replace_db_2_url)
     end
 
     wp_target.interesting_headers.each do |header|
-      output = "#{info('[+]')} Interesting header: "
 
       if header[1].class == Array
         header[1].each do |value|
-          puts output + "#{header[0]}: #{value}"
+          vane_output.add_interesting_header(header[0], value)
         end
       else
-        puts output + "#{header[0]}: #{header[1]}"
+        vane_output.add_interesting_header(header[0], header[1])
       end
     end
 
     if wp_target.multisite?
-      puts "#{info('[+]')} This site seems to be a multisite (http://codex.wordpress.org/Glossary#Multisite)"
+      vane_output.multisite_warning
     end
 
     if wp_target.has_must_use_plugins?
-      puts "#{info('[+]')} This site has 'Must Use Plugins' (http://codex.wordpress.org/Must_Use_Plugins)"
+      vane_output.must_use_plugins_warning
     end
 
     if wp_target.registration_enabled?
-      puts "#{warning('[+]')} Registration is enabled: #{wp_target.registration_url}"
+      vane_output.set_registration_url(wp_target.registration_url)
     end
 
     if wp_target.has_xml_rpc?
-      puts "#{info('[+]')} XML-RPC Interface available under: #{wp_target.xml_rpc_url}"
+      vane_output.set_xmlrpc_url(wp_target.xml_rpc_url)
     end
 
     if wp_target.upload_directory_listing_enabled?
-      puts "#{warning('[!]')} Upload directory has directory listing enabled: #{wp_target.upload_dir_url}"
+      vane_output.set_upload_dir_url(wp_target.upload_dir_url)
     end
 
     enum_options = {
@@ -201,17 +200,13 @@ def main
     }
 
     if wp_version = wp_target.version(WP_VERSIONS_FILE)
-      wp_version.output(vane_options.verbose)
+      vane_output.set_version(wp_version)
     else
-      puts
-      puts "#{notice('[i]')} WordPress version can not be detected"
+      vane_output.version_undetected_warning
     end
 
     if wp_theme = wp_target.theme
-      puts
-      # Theme version is handled in #to_s
-      puts "#{info('[+]')} WordPress theme in use: #{wp_theme}"
-      wp_theme.output(vane_options.verbose)
+      vane_output.set_active_theme(wp_theme)
 
       # Check for parent Themes
       parent_theme_count = 0
@@ -219,33 +214,26 @@ def main
         parent_theme_count += 1
 
         parent = wp_theme.get_parent_theme
-        puts
-        puts "#{info('[+]')} Detected parent theme: #{parent}"
-        parent.output(vane_options.verbose)
+        vane_output.add_parent_theme(parent)
         wp_theme = parent
       end
 
     end
 
     if vane_options.enumerate_plugins == nil and vane_options.enumerate_only_vulnerable_plugins == nil
-      puts
-      puts "#{info('[+]')} Enumerating plugins from passive detection ..."
+      vane_output.begin_passive_detection
 
       wp_plugins = WpPlugins.passive_detection(wp_target)
-      if !wp_plugins.empty?
-        puts " | #{wp_plugins.size} plugins found:"
+      vane_output.set_passive_plugin_count(wp_plugins.size)
 
-        wp_plugins.output(vane_options.verbose)
-      else
-        puts "#{info('[+]')} No plugins found"
+      if !wp_plugins.empty?
+        vane_output.set_passive_plugins(wp_plugins)
       end
     end
 
     # Enumerate the installed plugins
     if vane_options.enumerate_plugins or vane_options.enumerate_only_vulnerable_plugins or vane_options.enumerate_all_plugins
-      puts
-      puts "#{info('[+]')} Enumerating installed plugins #{'(only vulnerable ones)' if vane_options.enumerate_only_vulnerable_plugins} ..."
-      puts
+      vane_output.begin_enumerate_plugins(vane_options.enumerate_only_vulnerable_plugins)
 
       wp_plugins = WpPlugins.aggressive_detection(wp_target,
         enum_options.merge(
@@ -253,13 +241,9 @@ def main
           only_vulnerable: vane_options.enumerate_only_vulnerable_plugins || false
         )
       )
-      puts
+      vane_output.set_aggressive_plugin_count(wp_plugins.size)
       if !wp_plugins.empty?
-        puts "#{info('[+]')} We found #{wp_plugins.size} plugins:"
-
-        wp_plugins.output(vane_options.verbose)
-      else
-        puts "#{info('[+]')} No plugins found"
+        vane_putput.set_aggressive_plugins(wp_plugins)
       end
     end
 
